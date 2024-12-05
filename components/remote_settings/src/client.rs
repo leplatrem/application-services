@@ -168,9 +168,9 @@ impl<C: ApiClient> RemoteSettingsClient<C> {
             (Some(cached_records), _) => Some(self.filter_records(cached_records)),
             // Case 3: sync_if_empty=true
             (None, true) => {
-                let records = inner.api_client.get_records(None)?;
-                inner.storage.set_records(&collection_url, &records)?;
-                Some(self.filter_records(records))
+                let changeset = inner.api_client.fetch_changeset(None)?;
+                inner.storage.set_records(&collection_url, &changeset.changes)?;
+                Some(self.filter_records(changeset.changes))
             }
             // Case 4: Nothing to return
             (None, false) => None,
@@ -181,8 +181,8 @@ impl<C: ApiClient> RemoteSettingsClient<C> {
         let mut inner = self.inner.lock();
         let collection_url = inner.api_client.collection_url();
         let mtime = inner.storage.get_last_modified_timestamp(&collection_url)?;
-        let records = inner.api_client.get_records(mtime)?;
-        inner.storage.merge_records(&collection_url, &records)
+        let changeset = inner.api_client.fetch_changeset(mtime)?;
+        inner.storage.merge_records(&collection_url, &changeset.changes)
     }
 
     /// Downloads an attachment from [attachment_location]. NOTE: there are no guarantees about a
@@ -284,7 +284,7 @@ pub trait ApiClient {
     fn collection_url(&self) -> String;
 
     /// Fetch records from the server
-    fn get_records(&mut self, timestamp: Option<u64>) -> Result<Vec<RemoteSettingsRecord>>;
+    fn fetch_changeset(&mut self, timestamp: Option<u64>) -> Result<ChangesetResponse>;
 
     /// Fetch an attachment from the server
     fn get_attachment(&mut self, attachment_location: &str) -> Result<Vec<u8>>;
@@ -372,7 +372,7 @@ impl ApiClient for ViaductApiClient {
         self.endpoints.collection_url.to_string()
     }
 
-    fn get_records(&mut self, timestamp: Option<u64>) -> Result<Vec<RemoteSettingsRecord>> {
+    fn fetch_changeset(&mut self, timestamp: Option<u64>) -> Result<ChangesetResponse> {
         let mut url = self.endpoints.changeset_url.clone();
         // 0 is used as an arbitrary value for `_expected` because the current implementation does
         // not leverage push timestamps or polling from the monitor/changes endpoint. More
@@ -388,7 +388,7 @@ impl ApiClient for ViaductApiClient {
         let resp = self.make_request(url)?;
 
         if resp.is_success() {
-            Ok(resp.json::<ChangesetResponse>()?.changes)
+            Ok(resp.json::<ChangesetResponse>()?)
         } else {
             Err(Error::ResponseError(format!(
                 "status code: {}",
@@ -706,9 +706,25 @@ struct RecordsResponse {
     data: Vec<RemoteSettingsRecord>,
 }
 
-#[derive(Deserialize, Serialize)]
-struct ChangesetResponse {
+#[derive(Clone, Deserialize, Serialize)]
+pub struct ChangesetResponse {
     changes: Vec<RemoteSettingsRecord>,
+    timestamp: u64,
+    metadata: CollectionMetadata,
+}
+
+// TODO
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct CollectionMetadata {
+    signature: CollectionSignature,
+}
+
+// TODO
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct CollectionSignature {
+    signature: String,
+    public_key: String,
+    x5u: String,
 }
 
 /// A parsed Remote Settings record. Records can contain arbitrary fields, so clients
@@ -1705,14 +1721,24 @@ mod test_new_client {
             attachment: None,
             fields: json!({"foo": "bar"}).as_object().unwrap().clone(),
         }];
+        let changeset = ChangesetResponse {
+            changes: records.clone(),
+            timestamp: 42,
+            metadata: CollectionMetadata {
+                signature: CollectionSignature {
+                    signature: "b64sig".into(),
+                    public_key: "public_key".into(),
+                    x5u: "http://x5u.com".into(),
+                },
+            },
+        };
         api_client.expect_collection_url().returning(|| {
             "http://rs.example.com/v1/buckets/main/collections/test-collection".into()
         });
-        api_client.expect_get_records().returning({
-            let records = records.clone();
+        api_client.expect_fetch_changeset().returning({
             move |timestamp| {
                 assert_eq!(timestamp, None);
-                Ok(records.clone())
+                Ok(changeset.clone())
             }
         });
         api_client.expect_is_prod_server().returning(|| Ok(false));
@@ -1748,14 +1774,19 @@ mod jexl_tests {
             .unwrap()
             .clone(),
         }];
+        let changeset = ChangesetResponse {
+            changes: records.clone(),
+            timestamp: 42,
+            metadata: CollectionMetadata::default(),
+        };
         api_client.expect_collection_url().returning(|| {
             "http://rs.example.com/v1/buckets/main/collections/test-collection".into()
         });
-        api_client.expect_get_records().returning({
-            let records = records.clone();
+        api_client.expect_fetch_changeset().returning({
+            let changeset = changeset.clone();
             move |timestamp| {
                 assert_eq!(timestamp, None);
-                Ok(records.clone())
+                Ok(changeset.clone())
             }
         });
         api_client.expect_is_prod_server().returning(|| Ok(false));
@@ -1766,9 +1797,11 @@ mod jexl_tests {
         };
 
         let mut storage = Storage::new(":memory:".into()).expect("Error creating storage");
-        let _ = storage.set_records(
+        let _ = storage.set_collection_content(
             "http://rs.example.com/v1/buckets/main/collections/test-collection",
             &records,
+            42,
+            CollectionMetadata::default(),
         );
 
         let rs_client = RemoteSettingsClient::new_from_parts(
@@ -1799,14 +1832,19 @@ mod jexl_tests {
             .unwrap()
             .clone(),
         }];
+        let changeset = ChangesetResponse {
+            changes: records.clone(),
+            timestamp: 42,
+            metadata: CollectionMetadata::default(),
+        };
         api_client.expect_collection_url().returning(|| {
             "http://rs.example.com/v1/buckets/main/collections/test-collection".into()
         });
-        api_client.expect_get_records().returning({
-            let records = records.clone();
+        api_client.expect_fetch_changeset().returning({
+            let changeset = changeset.clone();
             move |timestamp| {
                 assert_eq!(timestamp, None);
-                Ok(records.clone())
+                Ok(changeset.clone())
             }
         });
         api_client.expect_is_prod_server().returning(|| Ok(false));
@@ -1817,9 +1855,11 @@ mod jexl_tests {
         };
 
         let mut storage = Storage::new(":memory:".into()).expect("Error creating storage");
-        let _ = storage.set_records(
+        let _ = storage.set_collection_content(
             "http://rs.example.com/v1/buckets/main/collections/test-collection",
             &records,
+            42,
+            CollectionMetadata::default(),
         );
 
         let rs_client = RemoteSettingsClient::new_from_parts(
@@ -1962,10 +2002,21 @@ mod cached_data_tests {
             attachment: None,
             fields: serde_json::Map::new(),
         }];
+        let changeset = ChangesetResponse {
+            changes: expected_records.clone(),
+            timestamp: 42,
+            metadata: CollectionMetadata {
+                signature: CollectionSignature {
+                    signature: "b64sig".into(),
+                    public_key: "public_key".into(),
+                    x5u: "http://x5u.com".into(),
+                },
+            },
+        };
         api_client
-            .expect_get_records()
+            .expect_fetch_changeset()
             .withf(|timestamp| timestamp.is_none())
-            .returning(move |_| Ok(expected_records.clone()));
+            .returning(move |_| Ok(changeset.clone()));
 
         let rs_client =
             RemoteSettingsClient::new_from_parts(collection_name.to_string(), storage, api_client);
@@ -2012,7 +2063,7 @@ mod cached_data_tests {
         api_client.expect_is_prod_server().returning(|| Ok(true));
 
         // Since sync_if_empty is false, get_records should not be called
-        // No need to set expectation for api_client.get_records
+        // No need to set expectation for api_client.fetch_changeset
 
         let rs_client =
             RemoteSettingsClient::new_from_parts(collection_name.to_string(), storage, api_client);
