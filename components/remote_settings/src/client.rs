@@ -151,9 +151,15 @@ impl<C: ApiClient> RemoteSettingsClient<C> {
                 .get_last_modified_timestamp(&collection_url)?
                 .unwrap_or(0);
             if packaged_data.timestamp > cached_timestamp {
-                inner
-                    .storage
-                    .set_records(&collection_url, &packaged_data.data)?;
+                // Remove previously cached data (packaged data does not have tombstones).
+                inner.storage.empty()?;
+                // Insert new packaged data.
+                inner.storage.insert_collection_content(
+                    &collection_url,
+                    &packaged_data.data,
+                    packaged_data.timestamp,
+                    CollectionMetadata::default(),
+                )?;
                 return Ok(Some(self.filter_records(packaged_data.data)));
             }
         }
@@ -169,7 +175,12 @@ impl<C: ApiClient> RemoteSettingsClient<C> {
             // Case 3: sync_if_empty=true
             (None, true) => {
                 let changeset = inner.api_client.fetch_changeset(None)?;
-                inner.storage.set_records(&collection_url, &changeset.changes)?;
+                inner.storage.insert_collection_content(
+                    &collection_url,
+                    &changeset.changes,
+                    changeset.timestamp,
+                    changeset.metadata,
+                )?;
                 Some(self.filter_records(changeset.changes))
             }
             // Case 4: Nothing to return
@@ -182,7 +193,12 @@ impl<C: ApiClient> RemoteSettingsClient<C> {
         let collection_url = inner.api_client.collection_url();
         let mtime = inner.storage.get_last_modified_timestamp(&collection_url)?;
         let changeset = inner.api_client.fetch_changeset(mtime)?;
-        inner.storage.merge_records(&collection_url, &changeset.changes)
+        inner.storage.insert_collection_content(
+            &collection_url,
+            &changeset.changes,
+            changeset.timestamp,
+            changeset.metadata,
+        )
     }
 
     /// Downloads an attachment from [attachment_location]. NOTE: there are no guarantees about a
@@ -1797,7 +1813,7 @@ mod jexl_tests {
         };
 
         let mut storage = Storage::new(":memory:".into()).expect("Error creating storage");
-        let _ = storage.set_collection_content(
+        let _ = storage.insert_collection_content(
             "http://rs.example.com/v1/buckets/main/collections/test-collection",
             &records,
             42,
@@ -1855,7 +1871,7 @@ mod jexl_tests {
         };
 
         let mut storage = Storage::new(":memory:".into()).expect("Error creating storage");
-        let _ = storage.set_collection_content(
+        let _ = storage.insert_collection_content(
             "http://rs.example.com/v1/buckets/main/collections/test-collection",
             &records,
             42,
@@ -1942,7 +1958,12 @@ mod cached_data_tests {
 
         let mut api_client = MockApiClient::new();
         let mut storage = Storage::new(":memory:".into())?;
-        storage.set_records(collection_url, &vec![old_record.clone()])?;
+        storage.insert_collection_content(
+            collection_url,
+            &vec![old_record.clone()],
+            42,
+            CollectionMetadata::default(),
+        )?;
 
         api_client
             .expect_collection_url()
@@ -2097,7 +2118,12 @@ mod cached_data_tests {
             attachment: None,
             fields: serde_json::Map::new(),
         }];
-        storage.set_records(&collection_url, &cached_records)?;
+        storage.insert_collection_content(
+            &collection_url,
+            &cached_records,
+            42,
+            CollectionMetadata::default(),
+        )?;
 
         api_client
             .expect_collection_url()
@@ -2133,7 +2159,12 @@ mod cached_data_tests {
 
         // Set up empty cached records
         let cached_records: Vec<RemoteSettingsRecord> = vec![];
-        storage.set_records(&collection_url, &cached_records)?;
+        storage.insert_collection_content(
+            &collection_url,
+            &cached_records,
+            42,
+            CollectionMetadata::default(),
+        )?;
 
         api_client
             .expect_collection_url()
