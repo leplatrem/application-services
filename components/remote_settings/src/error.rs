@@ -51,6 +51,8 @@ pub enum Error {
     RecordAttachmentMismatchError(String),
     #[error("data could not be serialized: {0}")]
     SerializationError(#[from] canonical_json::CanonicalJSONError),
+    #[error("signature could not be verified: {0}")]
+    SignatureError(#[from] rc_crypto::Error),
 }
 
 // Define how our internal errors are handled and converted to external errors

@@ -6,6 +6,7 @@ use crate::config::RemoteSettingsConfig;
 use crate::error::{Error, Result};
 #[cfg(feature = "jexl")]
 use crate::jexl_filter::JexlFilter;
+use crate::signatures;
 use crate::storage::Storage;
 #[cfg(feature = "jexl")]
 use crate::RemoteSettingsContext;
@@ -209,12 +210,14 @@ impl<C: ApiClient> RemoteSettingsClient<C> {
         let collection_url = inner.api_client.collection_url();
         let mtime = inner.storage.get_last_modified_timestamp(&collection_url)?;
         let changeset = inner.api_client.fetch_changeset(mtime)?;
-        inner.storage.set_collection_content(
+        let _ = inner.storage.set_collection_content(
             &collection_url,
             &changeset.changes,
             changeset.timestamp,
             changeset.metadata,
-        )
+        );
+        self.verify_signature()?;
+        Ok(())
     }
 
     fn verify_signature(&self) -> Result<()> {
@@ -223,8 +226,16 @@ impl<C: ApiClient> RemoteSettingsClient<C> {
         let timestamp = inner.storage.get_last_modified_timestamp(&collection_url)?;
         let records = inner.storage.get_records(&collection_url)?;
         let metadata = inner.storage.get_collection_metadata(&collection_url)?;
-
-        Ok(())
+        match (timestamp, records, metadata) {
+            (Some(timestamp), Some(records), Some(metadata)) => {
+                signatures::verify_signature(timestamp, records, metadata, 0)?;
+                Ok(())
+            }
+            _ => {
+                // TODO
+                Ok(())
+            }
+        }
     }
 
     /// Downloads an attachment from [attachment_location]. NOTE: there are no guarantees about a

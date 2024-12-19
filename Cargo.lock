@@ -4159,6 +4159,7 @@ dependencies = [
  "mockall",
  "mockito",
  "parking_lot",
+ "rc_crypto",
  "regex",
  "rusqlite",
  "serde",

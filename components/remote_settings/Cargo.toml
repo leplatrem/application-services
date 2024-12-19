@@ -32,6 +32,7 @@ anyhow = "1.0"
 firefox-versioning = { path = "../support/firefox-versioning" }
 sha2 = "^0.10"
 canonical_json = "0.5"
+rc_crypto = { path = "../support/rc_crypto" }
 
 [build-dependencies]
 uniffi = { version = "0.28.2", features = ["build"] }
